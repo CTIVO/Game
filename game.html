@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ByteRanger: RPG Shooter (HTML)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin:0; height:100%; background:#0b0f14; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #wrap { height:100%; display:grid; place-items:center; }
+    canvas { background: radial-gradient(1200px 800px at 50% 40%, #101a28 0%, #0b0f14 55%, #070a0f 100%); border:1px solid #1e2a3a; border-radius:14px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+    .hud {
+      position: fixed; left: 16px; top: 16px; right: 16px;
+      display:flex; gap:12px; align-items:stretch; pointer-events:none;
+    }
+    .panel {
+      pointer-events:none;
+      padding:10px 12px; border-radius:12px; border:1px solid #1e2a3a;
+      background: rgba(10,14,20,.65); backdrop-filter: blur(8px);
+      color:#d9e6ff; font-size:14px; line-height:1.2;
+      min-width: 160px;
+    }
+    .panel strong { color:#ffffff; }
+    .bar { margin-top:8px; height:10px; border-radius:999px; background: rgba(255,255,255,.08); overflow:hidden; }
+    .bar > div { height:100%; width:50%; background: linear-gradient(90deg, #49f0a6, #2dd4ff); }
+    .bar.hp > div { background: linear-gradient(90deg, #ff5a7a, #ffb86b); }
+    .hint {
+      position: fixed; left: 16px; bottom: 16px;
+      padding:10px 12px; border-radius:12px; border:1px solid #1e2a3a;
+      background: rgba(10,14,20,.65); backdrop-filter: blur(8px);
+      color:#cfe0ff; font-size:13px;
+    }
+    .modal {
+      position: fixed; inset:0; display:none; place-items:center;
+      background: rgba(0,0,0,.55);
+    }
+    .card {
+      width: min(720px, 92vw);
+      border-radius:16px; border:1px solid #25344a;
+      background: rgba(10,14,20,.92); color:#e8f1ff;
+      box-shadow: 0 18px 70px rgba(0,0,0,.6);
+      padding:16px;
+    }
+    .card h2 { margin:0 0 10px 0; font-size:18px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    .choice {
+      flex:1 1 200px;
+      border-radius:14px; border:1px solid #2a3b55;
+      background: rgba(255,255,255,.04);
+      padding:12px;
+      cursor:pointer;
+      user-select:none;
+    }
+    .choice:hover { background: rgba(255,255,255,.07); }
+    .choice h3 { margin:0 0 6px 0; font-size:15px; }
+    .choice p { margin:0; font-size:13px; color:#bfd3ff; }
+    .btnrow { margin-top:12px; display:flex; justify-content:flex-end; gap:10px; }
+    button {
+      pointer-events:auto;
+      border:1px solid #2a3b55; background: rgba(255,255,255,.06);
+      color:#e8f1ff; padding:10px 12px; border-radius:12px;
+      cursor:pointer; font-weight:600;
+    }
+    button:hover { background: rgba(255,255,255,.09); }
+    .small { font-size:12px; color:#b7c9ef; margin-top:6px; }
+    .center { text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="panel" style="min-width:220px">
+      <div><strong>HP</strong> <span id="hpText"></span></div>
+      <div class="bar hp"><div id="hpBar"></div></div>
+      <div style="margin-top:10px"><strong>XP</strong> <span id="xpText"></span></div>
+      <div class="bar"><div id="xpBar"></div></div>
+    </div>
+    <div class="panel">
+      <div><strong>Level</strong> <span id="lvlText"></span></div>
+      <div style="margin-top:6px"><strong>Wave</strong> <span id="waveText"></span></div>
+      <div style="margin-top:6px"><strong>Coins</strong> <span id="coinText"></span></div>
+    </div>
+    <div class="panel" style="flex:1">
+      <div><strong>Stats</strong></div>
+      <div id="statsText" style="margin-top:6px; color:#bcd1ff"></div>
+    </div>
+  </div>
+
+  <div class="hint" id="hint">
+    Move: <b>WASD/Arrows</b> • Aim: <b>Mouse</b> • Shoot: <b>Left Click/Hold</b> • Shop: <b>E</b> (between waves)
+  </div>
+
+  <div id="wrap"><canvas id="c" width="960" height="540"></canvas></div>
+
+  <div class="modal" id="modal">
+    <div class="card">
+      <h2 id="modalTitle">Choose an Upgrade</h2>
+      <div class="row" id="choices"></div>
+      <div class="btnrow">
+        <button id="closeBtn" style="display:none">Close</button>
+      </div>
+      <div class="small" id="modalHint"></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ===== Canvas & helpers =====
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rand = (a,b) => a + Math.random()*(b-a);
+  const dist2 = (ax,ay,bx,by) => (ax-bx)**2 + (ay-by)**2;
+  const len = (x,y) => Math.hypot(x,y);
+  const norm = (x,y) => {
+    const l = Math.hypot(x,y) || 1;
+    return [x/l, y/l];
+  };
+
+  // ===== Input =====
+  const keys = new Set();
+  let mouse = { x: W/2, y: H/2, down: false };
+
+  window.addEventListener("keydown", (e) => {
+    keys.add(e.key.toLowerCase());
+    // prevent page scrolling with arrows/space
+    if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase())) e.preventDefault();
+  }, { passive:false });
+
+  window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+  canvas.addEventListener("mousemove", (e) => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
+    mouse.y = (e.clientY - r.top)  * (canvas.height / r.height);
+  });
+  canvas.addEventListener("mousedown", () => mouse.down = true);
+  window.addEventListener("mouseup", () => mouse.down = false);
+
+  // ===== UI refs =====
+  const hpText = document.getElementById("hpText");
+  const hpBar = document.getElementById("hpBar");
+  const xpText = document.getElementById("xpText");
+  const xpBar = document.getElementById("xpBar");
+  const lvlText = document.getElementById("lvlText");
+  const waveText = document.getElementById("waveText");
+  const coinText = document.getElementById("coinText");
+  const statsText = document.getElementById("statsText");
+
+  const modal = document.getElementById("modal");
+  const choicesEl = document.getElementById("choices");
+  const modalTitle = document.getElementById("modalTitle");
+  const modalHint = document.getElementById("modalHint");
+  const closeBtn = document.getElementById("closeBtn");
+
+  // ===== Game state =====
+  let tPrev = performance.now();
+  let paused = false;
+  let gameOver = false;
+
+  const world = {
+    bullets: [],
+    enemies: [],
+    pickups: [],
+    particles: [],
+    shake: 0,
+  };
+
+  const player = {
+    x: W/2, y: H/2, r: 14,
+    hpMax: 100, hp: 100,
+    lvl: 1, xp: 0, xpNeed: 40,
+    coins: 0,
+
+    dmg: 10,
+    fireRate: 7.5,        // bullets per second
+    bulletSpeed: 620,
+    moveSpeed: 235,
+    critChance: 0.08,
+    critMult: 1.7,
+    lifeSteal: 0.00,      // heal fraction of damage
+    armor: 0.00,          // damage reduction 0..0.6
+    magnet: 0,            // pickup attraction radius
+  };
+
+  const wave = {
+    num: 1,
+    aliveTarget: 6,
+    spawnLeft: 6,
+    spawnTimer: 0,
+    between: false,
+    betweenTimer: 0,
+  };
+
+  // ===== Upgrades / Shop =====
+  function fmt(n) { return (Math.round(n*100)/100).toString(); }
+
+  function showModal(title, list, opts = {}) {
+    paused = true;
+    modal.style.display = "grid";
+    modalTitle.textContent = title;
+    modalHint.textContent = opts.hint || "Click an option.";
+
+    choicesEl.innerHTML = "";
+    closeBtn.style.display = opts.closable ? "inline-block" : "none";
+
+    list.forEach((item) => {
+      const div = document.createElement("div");
+      div.className = "choice";
+      div.innerHTML = `<h3>${item.name}</h3><p>${item.desc}</p>`;
+      div.addEventListener("click", () => {
+        item.apply();
+        if (!opts.stayOpen) hideModal();
+        else renderModalTitle(); // for shop updates
+      });
+      choicesEl.appendChild(div);
+    });
+
+    closeBtn.onclick = () => hideModal();
+  }
+  function hideModal() {
+    modal.style.display = "none";
+    paused = false;
+  }
+
+  function levelUp() {
+    player.lvl += 1;
+    // scale XP requirement a bit
+    player.xp -= player.xpNeed;
+    player.xpNeed = Math.floor(player.xpNeed * 1.35 + 10);
+
+    const pool = [
+      {
+        name: "+Damage",
+        desc: `Increase damage by +${Math.ceil(2 + player.lvl*0.6)}.`,
+        apply: () => player.dmg += Math.ceil(2 + player.lvl*0.6)
+      },
+      {
+        name: "+Fire Rate",
+        desc: "Shoot faster (+15% fire rate).",
+        apply: () => player.fireRate *= 1.15
+      },
+      {
+        name: "+Max HP",
+        desc: "Increase max HP by +18 and heal 18.",
+        apply: () => { player.hpMax += 18; player.hp = Math.min(player.hpMax, player.hp + 18); }
+      },
+      {
+        name: "+Speed",
+        desc: "Move faster (+8% speed).",
+        apply: () => player.moveSpeed *= 1.08
+      },
+      {
+        name: "+Crit",
+        desc: "Crit chance +4% (big hits sometimes).",
+        apply: () => player.critChance = Math.min(0.45, player.critChance + 0.04)
+      },
+      {
+        name: "Life Steal",
+        desc: "Gain 2% life steal (heal a bit when you deal damage).",
+        apply: () => player.lifeSteal = Math.min(0.12, player.lifeSteal + 0.02)
+      },
+      {
+        name: "Armor",
+        desc: "Reduce damage taken by 6% (up to 60%).",
+        apply: () => player.armor = Math.min(0.60, player.armor + 0.06)
+      },
+      {
+        name: "Coin Magnet",
+        desc: "Pickups are attracted to you from farther away.",
+        apply: () => player.magnet += 70
+      }
+    ];
+
+    // pick 3 random options
+    const picks = [];
+    while (picks.length < 3) {
+      const c = pool[(Math.random()*pool.length)|0];
+      if (!picks.includes(c)) picks.push(c);
+    }
+    showModal("Level Up! Choose an upgrade", picks, { hint: "Pick one upgrade to continue." });
+  }
+
+  function renderModalTitle() {
+    // used for shop; cheap update
+  }
+
+  function openShop() {
+    if (!wave.between) return;
+
+    const items = [
+      {
+        name: "Medkit (+35 HP) — 18 coins",
+        desc: "Heal instantly. Can’t exceed max HP.",
+        apply: () => {
+          if (player.coins < 18) return;
+          player.coins -= 18;
+          player.hp = Math.min(player.hpMax, player.hp + 35);
+        }
+      },
+      {
+        name: "Sharpened Rounds (+5 dmg) — 22 coins",
+        desc: "Permanent damage boost.",
+        apply: () => {
+          if (player.coins < 22) return;
+          player.coins -= 22; player.dmg += 5;
+        }
+      },
+      {
+        name: "Light Trigger (+10% fire rate) — 22 coins",
+        desc: "Permanent fire rate boost.",
+        apply: () => {
+          if (player.coins < 22) return;
+          player.coins -= 22; player.fireRate *= 1.10;
+        }
+      },
+      {
+        name: "Plating (+6% armor) — 24 coins",
+        desc: "Take less damage (caps at 60%).",
+        apply: () => {
+          if (player.coins < 24) return;
+          player.coins -= 24; player.armor = Math.min(0.60, player.armor + 0.06);
+        }
+      },
+      {
+        name: "Pocket XP (+30 XP) — 20 coins",
+        desc: "Get closer to the next level.",
+        apply: () => {
+          if (player.coins < 20) return;
+          player.coins -= 20; gainXP(30);
+        }
+      },
+      {
+        name: "Start Next Wave",
+        desc: "Begin immediately (also closes shop).",
+        apply: () => {
+          hideModal();
+          startNextWave();
+        }
+      }
+    ];
+
+    showModal("Shop (Between Waves)", items, {
+      closable: true,
+      stayOpen: true,
+      hint: "Buy stuff if you have coins. Close shop anytime."
+    });
+  }
+
+  // ===== Entities =====
+  function spawnEnemy() {
+    // spawn at edges
+    const side = (Math.random()*4)|0;
+    let x,y;
+    const m = 25;
+    if (side === 0) { x = rand(0,W); y = -m; }
+    if (side === 1) { x = W+m; y = rand(0,H); }
+    if (side === 2) { x = rand(0,W); y = H+m; }
+    if (side === 3) { x = -m; y = rand(0,H); }
+
+    const base = 22 + wave.num*2.1;
+    const hp = Math.floor(base * (0.95 + Math.random()*0.25));
+    const sp = 90 + wave.num*3 + Math.random()*35;
+
+    world.enemies.push({
+      x,y, r: 13 + Math.random()*4,
+      hp, hpMax: hp,
+      sp,
+      dmg: 10 + wave.num*1.5,
+      knock: 0,
+      vx:0, vy:0,
+    });
+  }
+
+  function shoot(dt) {
+    // fire rate (bullets per sec)
+    shoot.cooldown = shoot.cooldown ?? 0;
+    shoot.cooldown -= dt;
+
+    if (!mouse.down) return;
+    if (shoot.cooldown > 0) return;
+
+    const [dx,dy] = norm(mouse.x - player.x, mouse.y - player.y);
+    const spread = 0.06; // radians-ish small
+    const a = Math.atan2(dy,dx) + rand(-spread, spread);
+    const vx = Math.cos(a) * player.bulletSpeed;
+    const vy = Math.sin(a) * player.bulletSpeed;
+
+    world.bullets.push({
+      x: player.x + dx*(player.r+8),
+      y: player.y + dy*(player.r+8),
+      vx, vy,
+      r: 4,
+      life: 0.9,
+      dmg: player.dmg
+    });
+
+    // recoil tiny shake
+    world.shake = Math.min(10, world.shake + 1.1);
+
+    shoot.cooldown = 1 / player.fireRate;
+  }
+
+  function addParticles(x,y, n=8, speed=120) {
+    for (let i=0;i<n;i++) {
+      const a = Math.random()*Math.PI*2;
+      const s = rand(speed*0.4, speed);
+      world.particles.push({
+        x,y, vx: Math.cos(a)*s, vy: Math.sin(a)*s,
+        life: rand(0.25, 0.55)
+      });
+    }
+  }
+
+  function dropPickup(x,y) {
+    // 70% coin, 30% XP orb
+    if (Math.random() < 0.7) {
+      world.pickups.push({ x,y, r: 7, kind:"coin", val: 1 + (Math.random()<0.12?2:0) });
+    } else {
+      world.pickups.push({ x,y, r: 8, kind:"xp", val: 8 + ((Math.random()*10)|0) });
+    }
+  }
+
+  // ===== Combat / Progression =====
+  function gainXP(amount) {
+    player.xp += amount;
+    while (player.xp >= player.xpNeed) levelUp();
+  }
+
+  function damagePlayer(amount) {
+    const reduced = amount * (1 - player.armor);
+    player.hp -= reduced;
+    world.shake = Math.min(18, world.shake + 5);
+    if (player.hp <= 0 && !gameOver) {
+      player.hp = 0;
+      gameOver = true;
+      paused = true;
+      showModal("Game Over", [
+        {
+          name:"Restart",
+          desc:"Start over from wave 1.",
+          apply: () => restart()
+        }
+      ], { hint: "You can tweak the code to add more weapons!", closable:false });
+    }
+  }
+
+  function restart() {
+    // reset everything
+    world.bullets.length = 0;
+    world.enemies.length = 0;
+    world.pickups.length = 0;
+    world.particles.length = 0;
+    world.shake = 0;
+
+    player.x = W/2; player.y = H/2;
+    player.hpMax = 100; player.hp = 100;
+    player.lvl = 1; player.xp = 0; player.xpNeed = 40;
+    player.coins = 0;
+    player.dmg = 10;
+    player.fireRate = 7.5;
+    player.bulletSpeed = 620;
+    player.moveSpeed = 235;
+    player.critChance = 0.08;
+    player.critMult = 1.7;
+    player.lifeSteal = 0.00;
+    player.armor = 0.00;
+    player.magnet = 0;
+
+    wave.num = 1;
+    wave.aliveTarget = 6;
+    wave.spawnLeft = 6;
+    wave.spawnTimer = 0;
+    wave.between = false;
+    wave.betweenTimer = 0;
+
+    gameOver = false;
+    hideModal();
+  }
+
+  // ===== Waves =====
+  function startNextWave() {
+    wave.between = false;
+    wave.num += 1;
+    wave.aliveTarget = 5 + Math.floor(wave.num * 1.6);
+    wave.spawnLeft = wave.aliveTarget;
+    wave.spawnTimer = 0.3;
+  }
+
+  // Start wave 1
+  wave.spawnTimer = 0.4;
+
+  // ===== Update =====
+  function update(dt) {
+    // Movement
+    const up = keys.has("w") || keys.has("arrowup");
+    const down = keys.has("s") || keys.has("arrowdown");
+    const left = keys.has("a") || keys.has("arrowleft");
+    const right = keys.has("d") || keys.has("arrowright");
+
+    let mx = (right?1:0) - (left?1:0);
+    let my = (down?1:0) - (up?1:0);
+    if (mx || my) {
+      const [nx,ny] = norm(mx,my);
+      player.x += nx * player.moveSpeed * dt;
+      player.y += ny * player.moveSpeed * dt;
+    }
+    player.x = clamp(player.x, 24, W-24);
+    player.y = clamp(player.y, 24, H-24);
+
+    // Shooting
+    shoot(dt);
+
+    // Spawn enemies (not between waves)
+    if (!wave.between) {
+      wave.spawnTimer -= dt;
+      if (wave.spawnLeft > 0 && wave.spawnTimer <= 0) {
+        spawnEnemy();
+        wave.spawnLeft--;
+        // faster spawns later
+        wave.spawnTimer = Math.max(0.15, 0.55 - wave.num*0.03) * (0.85 + Math.random()*0.35);
+      }
+    }
+
+    // Bullets
+    for (let i = world.bullets.length - 1; i >= 0; i--) {
+      const b = world.bullets[i];
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.life -= dt;
+
+      // remove out of bounds or expired
+      if (b.life <= 0 || b.x < -50 || b.x > W+50 || b.y < -50 || b.y > H+50) {
+        world.bullets.splice(i,1);
+        continue;
+      }
+    }
+
+    // Enemies
+    for (let i = world.enemies.length - 1; i >= 0; i--) {
+      const e = world.enemies[i];
+
+      // chase
+      const [dx,dy] = norm(player.x - e.x, player.y - e.y);
+      const targetVx = dx * e.sp;
+      const targetVy = dy * e.sp;
+
+      // slight smoothing
+      e.vx = e.vx * 0.84 + targetVx * 0.16;
+      e.vy = e.vy * 0.84 + targetVy * 0.16;
+
+      // apply knockback decay
+      e.vx += (e.knock || 0) * dx;
+      e.vy += (e.knock || 0) * dy;
+      e.knock = (e.knock || 0) * 0.88;
+
+      e.x += e.vx * dt;
+      e.y += e.vy * dt;
+
+      // collide with player
+      const rr = (player.r + e.r);
+      if (dist2(player.x, player.y, e.x, e.y) < rr*rr) {
+        // push away
+        const push = 220;
+        e.x -= dx * push * dt;
+        e.y -= dy * push * dt;
+        damagePlayer(e.dmg * dt); // contact damage over time
+      }
+
+      // bullet collisions
+      for (let j = world.bullets.length - 1; j >= 0; j--) {
+        const b = world.bullets[j];
+        const cr = e.r + b.r;
+        if (dist2(b.x,b.y,e.x,e.y) < cr*cr) {
+          world.bullets.splice(j,1);
+
+          // crit?
+          const crit = Math.random() < player.critChance;
+          const dmg = b.dmg * (crit ? player.critMult : 1);
+          e.hp -= dmg;
+
+          // lifesteal
+          if (player.lifeSteal > 0) {
+            const heal = dmg * player.lifeSteal;
+            player.hp = Math.min(player.hpMax, player.hp + heal);
+          }
+
+          // knockback & particles
+          e.knock = (e.knock || 0) + 28;
+          addParticles(b.x, b.y, crit ? 14 : 8, crit ? 220 : 160);
+
+          if (e.hp <= 0) {
+            // kill
+            world.enemies.splice(i,1);
+            addParticles(e.x, e.y, 18, 240);
+            dropPickup(e.x, e.y);
+            gainXP(10 + Math.floor(wave.num*2.2));
+            break;
+          }
+        }
+      }
+    }
+
+    // Pickups (coins/xp)
+    for (let i = world.pickups.length - 1; i >= 0; i--) {
+      const p = world.pickups[i];
+
+      // magnet
+      const magR = 60 + player.magnet;
+      const d = Math.hypot(player.x - p.x, player.y - p.y);
+      if (d < magR) {
+        const [dx,dy] = norm(player.x - p.x, player.y - p.y);
+        p.x += dx * (260 + player.magnet*1.2) * dt;
+        p.y += dy * (260 + player.magnet*1.2) * dt;
+      }
+
+      // pickup
+      const rr = player.r + p.r + 2;
+      if (dist2(player.x, player.y, p.x, p.y) < rr*rr) {
+        if (p.kind === "coin") player.coins += p.val;
+        else gainXP(p.val);
+        addParticles(p.x, p.y, 10, 180);
+        world.pickups.splice(i,1);
+      }
+    }
+
+    // Particles
+    for (let i = world.particles.length - 1; i >= 0; i--) {
+      const q = world.particles[i];
+      q.x += q.vx * dt;
+      q.y += q.vy * dt;
+      q.vx *= 0.92;
+      q.vy *= 0.92;
+      q.life -= dt;
+      if (q.life <= 0) world.particles.splice(i,1);
+    }
+
+    // Between waves?
+    if (!wave.between) {
+      const doneSpawning = wave.spawnLeft <= 0;
+      const noneLeft = world.enemies.length === 0;
+      if (doneSpawning && noneLeft) {
+        wave.between = true;
+        wave.betweenTimer = 1.2;
+      }
+    } else {
+      wave.betweenTimer -= dt;
+      // allow shop + show hint
+      if (wave.betweenTimer <= 0) {
+        // auto-heal tiny between waves
+        player.hp = Math.min(player.hpMax, player.hp + 8);
+      }
+    }
+
+    // open shop
+    if (keys.has("e")) {
+      keys.delete("e");
+      openShop();
+    }
+  }
+
+  // ===== Draw =====
+  function draw() {
+    // screen shake
+    const shake = world.shake;
+    world.shake *= 0.90;
+    const sx = (Math.random()-0.5) * shake;
+    const sy = (Math.random()-0.5) * shake;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    ctx.clearRect(-50,-50,W+100,H+100);
+
+    // floor grid
+    ctx.globalAlpha = 0.12;
+    ctx.strokeStyle = "#5aa2ff";
+    ctx.lineWidth = 1;
+    const grid = 40;
+    for (let x = 0; x <= W; x += grid) {
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    }
+    for (let y = 0; y <= H; y += grid) {
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // pickups
+    for (const p of world.pickups) {
+      ctx.beginPath();
+      ctx.fillStyle = (p.kind === "coin") ? "rgba(255, 217, 90, .95)" : "rgba(90, 200, 255, .95)";
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r+6, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // bullets
+    ctx.fillStyle = "rgba(255,255,255,.95)";
+    for (const b of world.bullets) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // enemies
+    for (const e of world.enemies) {
+      // body
+      ctx.beginPath();
+      ctx.fillStyle = "rgba(255, 100, 140, .92)";
+      ctx.arc(e.x, e.y, e.r, 0, Math.PI*2);
+      ctx.fill();
+
+      // hp bar
+      const w = 34, h = 6;
+      const frac = clamp(e.hp / e.hpMax, 0, 1);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "rgba(0,0,0,.45)";
+      ctx.fillRect(e.x - w/2, e.y - e.r - 16, w, h);
+      ctx.fillStyle = "rgba(255,255,255,.80)";
+      ctx.fillRect(e.x - w/2, e.y - e.r - 16, w*frac, h);
+      ctx.globalAlpha = 1;
+    }
+
+    // player
+    // aim line
+    const [adx,ady] = norm(mouse.x - player.x, mouse.y - player.y);
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = "#cfe6ff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(player.x, player.y);
+    ctx.lineTo(player.x + adx*40, player.y + ady*40);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // body
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(90, 220, 255, .95)";
+    ctx.arc(player.x, player.y, player.r, 0, Math.PI*2);
+    ctx.fill();
+
+    // visor
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(255,255,255,.75)";
+    ctx.arc(player.x + adx*7, player.y + ady*7, 6, 0, Math.PI*2);
+    ctx.fill();
+
+    // particles
+    for (const q of world.particles) {
+      ctx.globalAlpha = clamp(q.life * 2.2, 0, 1);
+      ctx.fillStyle = "rgba(255,255,255,.9)";
+      ctx.fillRect(q.x, q.y, 2.4, 2.4);
+    }
+    ctx.globalAlpha = 1;
+
+    // between wave banner
+    if (wave.between && !paused && !gameOver) {
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "rgba(0,0,0,.35)";
+      ctx.fillRect(W/2 - 220, 18, 440, 46);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#e8f1ff";
+      ctx.font = "600 16px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("Between Waves — Press E for Shop, or keep moving to start when ready.", W/2, 47);
+      ctx.font = "500 12px system-ui";
+      ctx.fillText("Tip: upgrades stack. Try Crit + Fire Rate for fun.", W/2, 64);
+      ctx.textAlign = "left";
+    }
+
+    ctx.restore();
+
+    // update HUD
+    hpText.textContent = `${Math.ceil(player.hp)} / ${player.hpMax}`;
+    hpBar.style.width = `${clamp(player.hp/player.hpMax,0,1)*100}%`;
+
+    xpText.textContent = `${Math.floor(player.xp)} / ${player.xpNeed}`;
+    xpBar.style.width = `${clamp(player.xp/player.xpNeed,0,1)*100}%`;
+
+    lvlText.textContent = player.lvl;
+    waveText.textContent = wave.num + (wave.between ? " (break)" : "");
+    coinText.textContent = player.coins;
+
+    statsText.innerHTML =
+      `DMG: <b>${fmt(player.dmg)}</b> • Fire: <b>${fmt(player.fireRate)}/s</b> • Speed: <b>${fmt(player.moveSpeed)}</b><br>` +
+      `Crit: <b>${Math.round(player.critChance*100)}%</b> • Armor: <b>${Math.round(player.armor*100)}%</b> • Lifesteal: <b>${Math.round(player.lifeSteal*100)}%</b>`;
+  }
+
+  // ===== Main loop =====
+  function frame(now) {
+    const dt = Math.min(0.033, (now - tPrev) / 1000);
+    tPrev = now;
+
+    if (!paused) update(dt);
+    draw();
+
+    // auto-start next wave if player moved during break
+    if (wave.between && !paused && !gameOver) {
+      const anyMove = keys.has("w")||keys.has("a")||keys.has("s")||keys.has("d")||
+                      keys.has("arrowup")||keys.has("arrowleft")||keys.has("arrowdown")||keys.has("arrowright");
+      if (wave.betweenTimer <= 0 && anyMove) startNextWave();
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // Pause on tab blur
+  window.addEventListener("blur", () => { if (!gameOver) paused = true; });
+  window.addEventListener("focus", () => { if (!gameOver && modal.style.display==="none") paused = false; });
+
+  // Start message
+  showModal("ByteRanger: RPG Shooter", [
+    {
+      name:"Start Game",
+      desc:"Jump in. Move with WASD, aim with mouse, click to shoot.",
+      apply: () => hideModal()
+    },
+    {
+      name:"How to win",
+      desc:"Survive waves, level up, buy upgrades between waves. Keep improving your stats.",
+      apply: () => hideModal()
+    }
+  ], { hint: "Have fun! You can edit the code to add new weapons, bosses, or maps.", closable:false });
+
+})();
+</script>
+</body>
+</html>
